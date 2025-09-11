@@ -1,0 +1,1791 @@
+#!/usr/bin/env python3
+"""
+Comprehensive GitHub MCP Server - Full GitHub API Integration
+Replicates all functionality from GitHub's official MCP server
+"""
+
+import sys
+import asyncio
+import json
+import os
+import aiohttp
+import base64
+import signal
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from fastmcp import FastMCP
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Create FastMCP server instance
+mcp = FastMCP("GitHub Comprehensive Server")
+
+class GitHubService:
+    def __init__(self):
+        self.github_token = os.getenv('GITHUB_TOKEN')
+        if not self.github_token:
+            print("Warning: GITHUB_TOKEN not found. Some operations may be limited.", file=sys.stderr)
+        
+        self.session = None
+        self._session_lock = asyncio.Lock()
+        
+    async def ensure_session(self):
+        """Ensure session exists with optimized settings"""
+        if not self.session or self.session.closed:
+            async with self._session_lock:
+                if not self.session or self.session.closed:
+                    connector = aiohttp.TCPConnector(
+                        limit=100,
+                        limit_per_host=30,
+                        ttl_dns_cache=300,
+                        use_dns_cache=True,
+                    )
+                    timeout = aiohttp.ClientTimeout(total=60, connect=15)
+                    self.session = aiohttp.ClientSession(
+                        connector=connector,
+                        timeout=timeout
+                    )
+    
+    async def close_session(self):
+        """Close session properly"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None
+    
+    def get_headers(self):
+        """Get headers for GitHub API requests"""
+        headers = {
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'GitHub-MCP-Server/1.0',
+            'X-GitHub-Api-Version': '2022-11-28'
+        }
+        if self.github_token:
+            headers['Authorization'] = f'Bearer {self.github_token}'
+        return headers
+    
+    async def api_request(self, method: str, url: str, **kwargs) -> Dict:
+        """Make API request with error handling"""
+        await self.ensure_session()
+        
+        try:
+            async with self.session.request(method, url, headers=self.get_headers(), **kwargs) as response:
+                if response.status == 200:
+                    return await response.json()
+                elif response.status == 201:
+                    return await response.json()
+                elif response.status == 204:
+                    return {"message": "Success"}
+                elif response.status == 404:
+                    return {"error": "Resource not found", "status": 404}
+                elif response.status == 403:
+                    return {"error": "Forbidden or rate limited", "status": 403}
+                elif response.status == 401:
+                    return {"error": "Unauthorized - check your token", "status": 401}
+                else:
+                    error_text = await response.text()
+                    return {"error": f"API error {response.status}: {error_text}", "status": response.status}
+        except Exception as e:
+            return {"error": f"Request failed: {str(e)}"}
+
+# Global service instance
+github = GitHubService()
+
+# ============================================================================
+# USER & AUTHENTICATION TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def get_authenticated_user() -> str:
+    """Get information about the authenticated user
+    
+    Returns:
+        JSON string with user information
+    """
+    result = await github.api_request('GET', 'https://api.github.com/user')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_user(username: str) -> str:
+    """Get information about a specific user
+    
+    Args:
+        username: GitHub username
+        
+    Returns:
+        JSON string with user information
+    """
+    result = await github.api_request('GET', f'https://api.github.com/users/{username}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_user_repos(username: str, type: str = "all", sort: str = "updated", per_page: int = 30) -> str:
+    """List repositories for a user
+    
+    Args:
+        username: GitHub username
+        type: Repository type (all, owner, member)
+        sort: Sort order (created, updated, pushed, full_name)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with repositories
+    """
+    params = {
+        'type': type,
+        'sort': sort,
+        'per_page': min(per_page, 100)
+    }
+    result = await github.api_request('GET', f'https://api.github.com/users/{username}/repos', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# REPOSITORY MANAGEMENT TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def get_repository(owner: str, repo: str) -> str:
+    """Get repository information
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with repository details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/milestones', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_milestone(owner: str, repo: str, title: str, description: str = "", due_on: str = None, state: str = "open") -> str:
+    """Create a milestone
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        title: Milestone title
+        description: Milestone description
+        due_on: Due date (ISO 8601 format)
+        state: Milestone state (open, closed)
+        
+    Returns:
+        JSON string with created milestone
+    """
+    data = {
+        'title': title,
+        'description': description,
+        'state': state
+    }
+    
+    if due_on:
+        data['due_on'] = due_on
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/milestones', json=data)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# COLLABORATORS & PERMISSIONS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_collaborators(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository collaborators
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with collaborators
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/collaborators', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def add_collaborator(owner: str, repo: str, username: str, permission: str = "push") -> str:
+    """Add a collaborator to repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        username: Username to add
+        permission: Permission level (pull, push, admin, maintain, triage)
+        
+    Returns:
+        JSON string with result
+    """
+    data = {'permission': permission}
+    result = await github.api_request('PUT', f'https://api.github.com/repos/{owner}/{repo}/collaborators/{username}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def remove_collaborator(owner: str, repo: str, username: str) -> str:
+    """Remove a collaborator from repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        username: Username to remove
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('DELETE', f'https://api.github.com/repos/{owner}/{repo}/collaborators/{username}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def check_user_permission(owner: str, repo: str, username: str) -> str:
+    """Check user's permission level
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        username: Username to check
+        
+    Returns:
+        JSON string with permission details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/collaborators/{username}/permission')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# WEBHOOKS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_webhooks(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository webhooks
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with webhooks
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/hooks', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_webhook(owner: str, repo: str, url: str, events: List[str] = None, secret: str = None, content_type: str = "json") -> str:
+    """Create a webhook
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        url: Webhook URL
+        events: List of events to subscribe to
+        secret: Webhook secret
+        content_type: Content type (json, form)
+        
+    Returns:
+        JSON string with created webhook
+    """
+    if events is None:
+        events = ["push"]
+    
+    config = {
+        'url': url,
+        'content_type': content_type
+    }
+    
+    if secret:
+        config['secret'] = secret
+    
+    data = {
+        'config': config,
+        'events': events
+    }
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/hooks', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def delete_webhook(owner: str, repo: str, hook_id: int) -> str:
+    """Delete a webhook
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        hook_id: Webhook ID
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('DELETE', f'https://api.github.com/repos/{owner}/{repo}/hooks/{hook_id}')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# GITHUB ACTIONS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_workflows(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository workflows
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with workflows
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/actions/workflows', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_workflow(owner: str, repo: str, workflow_id: str) -> str:
+    """Get specific workflow
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        workflow_id: Workflow ID or filename
+        
+    Returns:
+        JSON string with workflow details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_id}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_workflow_runs(owner: str, repo: str, workflow_id: str = None, status: str = None, per_page: int = 30) -> str:
+    """List workflow runs
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        workflow_id: Workflow ID (optional)
+        status: Run status filter (queued, in_progress, completed)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with workflow runs
+    """
+    params = {'per_page': min(per_page, 100)}
+    if status:
+        params['status'] = status
+    
+    if workflow_id:
+        url = f'https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs'
+    else:
+        url = f'https://api.github.com/repos/{owner}/{repo}/actions/runs'
+    
+    result = await github.api_request('GET', url, params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_workflow_run(owner: str, repo: str, run_id: int) -> str:
+    """Get specific workflow run
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        run_id: Workflow run ID
+        
+    Returns:
+        JSON string with workflow run details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def cancel_workflow_run(owner: str, repo: str, run_id: int) -> str:
+    """Cancel a workflow run
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        run_id: Workflow run ID
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/cancel')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def rerun_workflow(owner: str, repo: str, run_id: int) -> str:
+    """Rerun a workflow
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        run_id: Workflow run ID
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/rerun')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def trigger_workflow_dispatch(owner: str, repo: str, workflow_id: str, ref: str, inputs: Dict[str, Any] = None) -> str:
+    """Trigger workflow dispatch event
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        workflow_id: Workflow ID or filename
+        ref: Git reference (branch or tag)
+        inputs: Workflow inputs
+        
+    Returns:
+        JSON string with result
+    """
+    data = {'ref': ref}
+    if inputs:
+        data['inputs'] = inputs
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', json=data)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# ORGANIZATION TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def get_organization(org: str) -> str:
+    """Get organization information
+    
+    Args:
+        org: Organization name
+        
+    Returns:
+        JSON string with organization details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/orgs/{org}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_organization_repos(org: str, type: str = "all", sort: str = "updated", per_page: int = 30) -> str:
+    """List organization repositories
+    
+    Args:
+        org: Organization name
+        type: Repository type (all, public, private, forks, sources, member)
+        sort: Sort order (created, updated, pushed, full_name)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with repositories
+    """
+    params = {
+        'type': type,
+        'sort': sort,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', f'https://api.github.com/orgs/{org}/repos', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_organization_members(org: str, role: str = "all", per_page: int = 30) -> str:
+    """List organization members
+    
+    Args:
+        org: Organization name
+        role: Role filter (all, admin, member)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with members
+    """
+    params = {
+        'role': role,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', f'https://api.github.com/orgs/{org}/members', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def check_organization_membership(org: str, username: str) -> str:
+    """Check if user is organization member
+    
+    Args:
+        org: Organization name
+        username: Username to check
+        
+    Returns:
+        JSON string with membership status
+    """
+    result = await github.api_request('GET', f'https://api.github.com/orgs/{org}/members/{username}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_organization_teams(org: str, per_page: int = 30) -> str:
+    """List organization teams
+    
+    Args:
+        org: Organization name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with teams
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/orgs/{org}/teams', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# GISTS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_gists(username: str = None, per_page: int = 30) -> str:
+    """List gists
+    
+    Args:
+        username: Username to list gists for (optional, uses authenticated user if not provided)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with gists
+    """
+    params = {'per_page': min(per_page, 100)}
+    
+    if username:
+        url = f'https://api.github.com/users/{username}/gists'
+    else:
+        url = 'https://api.github.com/gists'
+    
+    result = await github.api_request('GET', url, params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_gist(gist_id: str) -> str:
+    """Get specific gist
+    
+    Args:
+        gist_id: Gist ID
+        
+    Returns:
+        JSON string with gist details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/gists/{gist_id}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_gist(description: str, files: Dict[str, str], public: bool = True) -> str:
+    """Create a gist
+    
+    Args:
+        description: Gist description
+        files: Dictionary of filename -> content
+        public: Whether gist should be public
+        
+    Returns:
+        JSON string with created gist
+    """
+    formatted_files = {}
+    for filename, content in files.items():
+        formatted_files[filename] = {'content': content}
+    
+    data = {
+        'description': description,
+        'files': formatted_files,
+        'public': public
+    }
+    
+    result = await github.api_request('POST', 'https://api.github.com/gists', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def update_gist(gist_id: str, description: str = None, files: Dict[str, str] = None) -> str:
+    """Update a gist
+    
+    Args:
+        gist_id: Gist ID
+        description: New description
+        files: Dictionary of filename -> content
+        
+    Returns:
+        JSON string with updated gist
+    """
+    data = {}
+    
+    if description is not None:
+        data['description'] = description
+    
+    if files:
+        formatted_files = {}
+        for filename, content in files.items():
+            formatted_files[filename] = {'content': content}
+        data['files'] = formatted_files
+    
+    result = await github.api_request('PATCH', f'https://api.github.com/gists/{gist_id}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def delete_gist(gist_id: str) -> str:
+    """Delete a gist
+    
+    Args:
+        gist_id: Gist ID
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('DELETE', f'https://api.github.com/gists/{gist_id}')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# NOTIFICATIONS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_notifications(all: bool = False, participating: bool = False, per_page: int = 30) -> str:
+    """List notifications for authenticated user
+    
+    Args:
+        all: Show all notifications (not just unread)
+        participating: Show only notifications in which user is participating
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with notifications
+    """
+    params = {'per_page': min(per_page, 100)}
+    if all:
+        params['all'] = 'true'
+    if participating:
+        params['participating'] = 'true'
+    
+    result = await github.api_request('GET', 'https://api.github.com/notifications', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def mark_notifications_read(last_read_at: str = None) -> str:
+    """Mark notifications as read
+    
+    Args:
+        last_read_at: ISO 8601 timestamp of last read time
+        
+    Returns:
+        JSON string with result
+    """
+    data = {}
+    if last_read_at:
+        data['last_read_at'] = last_read_at
+    else:
+        data['last_read_at'] = datetime.utcnow().isoformat() + 'Z'
+    
+    result = await github.api_request('PUT', 'https://api.github.com/notifications', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_repository_notifications(owner: str, repo: str, all: bool = False, participating: bool = False, per_page: int = 30) -> str:
+    """List notifications for a repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        all: Show all notifications (not just unread)
+        participating: Show only notifications in which user is participating
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with notifications
+    """
+    params = {'per_page': min(per_page, 100)}
+    if all:
+        params['all'] = 'true'
+    if participating:
+        params['participating'] = 'true'
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/notifications', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# STARGAZERS & WATCHERS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_stargazers(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository stargazers
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with stargazers
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/stargazers', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_watchers(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository watchers
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with watchers
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/subscribers', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def star_repository(owner: str, repo: str) -> str:
+    """Star a repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('PUT', f'https://api.github.com/user/starred/{owner}/{repo}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def unstar_repository(owner: str, repo: str) -> str:
+    """Unstar a repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('DELETE', f'https://api.github.com/user/starred/{owner}/{repo}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def check_if_starred(owner: str, repo: str) -> str:
+    """Check if user has starred repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('GET', f'https://api.github.com/user/starred/{owner}/{repo}')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# FORKS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_forks(owner: str, repo: str, sort: str = "newest", per_page: int = 30) -> str:
+    """List repository forks
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        sort: Sort order (newest, oldest, stargazers, watchers)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with forks
+    """
+    params = {
+        'sort': sort,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/forks', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_fork(owner: str, repo: str, organization: str = None, name: str = None, default_branch_only: bool = False) -> str:
+    """Create a fork of repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        organization: Organization to fork to (optional)
+        name: Name for the fork (optional)
+        default_branch_only: Fork only default branch
+        
+    Returns:
+        JSON string with created fork
+    """
+    data = {}
+    if organization:
+        data['organization'] = organization
+    if name:
+        data['name'] = name
+    if default_branch_only:
+        data['default_branch_only'] = True
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/forks', json=data)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# REPOSITORY STATISTICS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def get_repository_stats_contributors(owner: str, repo: str) -> str:
+    """Get repository contributor statistics
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with contributor stats
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/stats/contributors')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_repository_stats_commit_activity(owner: str, repo: str) -> str:
+    """Get repository commit activity statistics
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with commit activity stats
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/stats/commit_activity')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_repository_stats_frequency(owner: str, repo: str) -> str:
+    """Get repository code frequency statistics
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with code frequency stats
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/stats/code_frequency')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_repository_languages(owner: str, repo: str) -> str:
+    """Get repository programming languages
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with language statistics
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/languages')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# ADVANCED REPOSITORY DATA TOOL (Enhanced from original)
+# ============================================================================
+
+@mcp.tool()
+async def get_comprehensive_repo_data(owner: str, repo: str, include_files: bool = True, max_files: int = 50) -> str:
+    """Get comprehensive repository data including files (Enhanced version)
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        include_files: Whether to include file contents
+        max_files: Maximum number of files to retrieve
+        
+    Returns:
+        JSON string with comprehensive repository data
+    """
+    repo_data = {
+        "owner": owner,
+        "repository": repo,
+        "metadata": {},
+        "files": [],
+        "branches": [],
+        "languages": {},
+        "contributors": []
+    }
+    
+    try:
+        # Get basic repository info
+        repo_info = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}')
+        if 'error' not in repo_info:
+            repo_data["metadata"] = repo_info
+        
+        # Get branches
+        branches = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/branches')
+        if 'error' not in branches:
+            repo_data["branches"] = branches
+        
+        # Get languages
+        languages = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/languages')
+        if 'error' not in languages:
+            repo_data["languages"] = languages
+        
+        # Get file tree and contents if requested
+        if include_files:
+            tree = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD', params={'recursive': '1'})
+            
+            if 'error' not in tree and 'tree' in tree:
+                supported_extensions = {'.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs', '.php', '.rb', '.swift', '.kt', '.md', '.txt', '.json', '.yaml', '.yml', '.html', '.css', '.sql', '.csv'}
+                
+                files_to_process = []
+                for item in tree['tree']:
+                    if (item['type'] == 'blob' and 
+                        item['size'] < 100000 and  # Max file size
+                        any(item['path'].endswith(ext) for ext in supported_extensions)):
+                        files_to_process.append(item['path'])
+                
+                # Limit files processed
+                files_to_process = files_to_process[:max_files]
+                
+                # Fetch file contents in batches
+                batch_size = 10
+                for i in range(0, len(files_to_process), batch_size):
+                    batch = files_to_process[i:i + batch_size]
+                    
+                    # Create concurrent tasks for batch
+                    tasks = []
+                    for file_path in batch:
+                        task = github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/contents/{file_path}')
+                        tasks.append((file_path, task))
+                    
+                    # Wait for batch completion
+                    for file_path, task in tasks:
+                        file_result = await task
+                        if 'error' not in file_result and 'content' in file_result:
+                            try:
+                                content = base64.b64decode(file_result['content']).decode('utf-8')
+                                repo_data["files"].append({
+                                    'path': file_path,
+                                    'content': content,
+                                    'size': file_result['size'],
+                                    'sha': file_result['sha']
+                                })
+                            except Exception as e:
+                                print(f"Error decoding {file_path}: {e}")
+                    
+                    # Small delay between batches
+                    if i + batch_size < len(files_to_process):
+                        await asyncio.sleep(0.1)
+        
+        return json.dumps(repo_data, indent=2)
+        
+    except Exception as e:
+        error_result = {"error": f"Failed to fetch comprehensive repository data: {str(e)}"}
+        return json.dumps(error_result, indent=2)
+
+# ============================================================================
+# CLEANUP AND SHUTDOWN
+# ============================================================================
+
+async def cleanup():
+    """Cleanup function for graceful shutdown"""
+    print("Cleaning up GitHub service...")
+    await github.close_session()
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    print(f"\nReceived signal {signum}, shutting down gracefully...")
+    asyncio.create_task(cleanup())
+    exit(0)
+
+if __name__ == '__main__':
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Validate environment on startup
+    if not os.getenv('GITHUB_TOKEN'):
+        print("Warning: GITHUB_TOKEN not found. Some operations will be limited.", file=sys.stderr)
+    
+    try:
+        print("🚀 Starting Comprehensive GitHub MCP Server...")
+        print("📊 Available tools:")
+        print("   • User Management (get_authenticated_user, get_user, etc.)")
+        print("   • Repository Management (get_repository, create_repository, etc.)")
+        print("   • File Operations (get_file_content, create_or_update_file, etc.)")
+        print("   • Issues & PRs (list_issues, create_issue, create_pull_request, etc.)")
+        print("   • Search Capabilities (search_repositories, search_code, etc.)")
+        print("   • GitHub Actions (list_workflows, trigger_workflow_dispatch, etc.)")
+        print("   • Organizations (get_organization, list_organization_repos, etc.)")
+        print("   • Gists (list_gists, create_gist, etc.)")
+        print("   • Notifications, Webhooks, Statistics, and more...")
+        print(f"🔧 Total tools available: {len([name for name in globals() if hasattr(globals()[name], '__call__') and hasattr(globals()[name], '_mcp_tool')])}")
+        mcp.run()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        asyncio.run(cleanup())
+    except Exception as e:
+        print(f"Server error: {e}", file=/{owner}/{repo}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_repository_branches(owner: str, repo: str) -> str:
+    """List repository branches
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with branches
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/branches')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_branch(owner: str, repo: str, branch: str) -> str:
+    """Get specific branch information
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        branch: Branch name
+        
+    Returns:
+        JSON string with branch details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/branches/{branch}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_repository(name: str, description: str = "", private: bool = False, auto_init: bool = True) -> str:
+    """Create a new repository
+    
+    Args:
+        name: Repository name
+        description: Repository description
+        private: Whether repository should be private
+        auto_init: Initialize with README
+        
+    Returns:
+        JSON string with created repository details
+    """
+    data = {
+        'name': name,
+        'description': description,
+        'private': private,
+        'auto_init': auto_init
+    }
+    result = await github.api_request('POST', 'https://api.github.com/user/repos', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def delete_repository(owner: str, repo: str) -> str:
+    """Delete a repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        
+    Returns:
+        JSON string with result
+    """
+    result = await github.api_request('DELETE', f'https://api.github.com/repos/{owner}/{repo}')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# FILE OPERATIONS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def get_file_content(owner: str, repo: str, path: str, ref: str = "HEAD") -> str:
+    """Get file content from repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        path: File path
+        ref: Git reference (branch, commit, tag)
+        
+    Returns:
+        File content as string
+    """
+    params = {'ref': ref} if ref != "HEAD" else {}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/contents/{path}', params=params)
+    
+    if 'content' in result and not isinstance(result, dict) or 'error' not in result:
+        try:
+            content = base64.b64decode(result['content']).decode('utf-8')
+            return content
+        except Exception as e:
+            return f"Error decoding file: {e}"
+    
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_or_update_file(owner: str, repo: str, path: str, message: str, content: str, branch: str = "main", sha: str = None) -> str:
+    """Create or update a file in repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        path: File path
+        message: Commit message
+        content: File content
+        branch: Target branch
+        sha: File SHA for updates (required for updates)
+        
+    Returns:
+        JSON string with result
+    """
+    encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+    
+    data = {
+        'message': message,
+        'content': encoded_content,
+        'branch': branch
+    }
+    
+    if sha:
+        data['sha'] = sha
+    
+    result = await github.api_request('PUT', f'https://api.github.com/repos/{owner}/{repo}/contents/{path}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def delete_file(owner: str, repo: str, path: str, message: str, sha: str, branch: str = "main") -> str:
+    """Delete a file from repository
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        path: File path
+        message: Commit message
+        sha: File SHA (required)
+        branch: Target branch
+        
+    Returns:
+        JSON string with result
+    """
+    data = {
+        'message': message,
+        'sha': sha,
+        'branch': branch
+    }
+    
+    result = await github.api_request('DELETE', f'https://api.github.com/repos/{owner}/{repo}/contents/{path}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_directory_contents(owner: str, repo: str, path: str = "", ref: str = "HEAD") -> str:
+    """Get directory contents
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        path: Directory path (empty for root)
+        ref: Git reference
+        
+    Returns:
+        JSON string with directory contents
+    """
+    params = {'ref': ref} if ref != "HEAD" else {}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/contents/{path}', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_repository_tree(owner: str, repo: str, tree_sha: str = "HEAD", recursive: bool = False) -> str:
+    """Get repository tree
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        tree_sha: Tree SHA or reference
+        recursive: Get tree recursively
+        
+    Returns:
+        JSON string with tree contents
+    """
+    params = {'recursive': '1'} if recursive else {}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/git/trees/{tree_sha}', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# ISSUES MANAGEMENT TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_issues(owner: str, repo: str, state: str = "open", labels: str = "", sort: str = "created", direction: str = "desc", per_page: int = 30) -> str:
+    """List repository issues
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        state: Issue state (open, closed, all)
+        labels: Comma-separated list of label names
+        sort: Sort by (created, updated, comments)
+        direction: Sort direction (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with issues
+    """
+    params = {
+        'state': state,
+        'sort': sort,
+        'direction': direction,
+        'per_page': min(per_page, 100)
+    }
+    
+    if labels:
+        params['labels'] = labels
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/issues', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_issue(owner: str, repo: str, issue_number: int) -> str:
+    """Get specific issue
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+        
+    Returns:
+        JSON string with issue details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_issue(owner: str, repo: str, title: str, body: str = "", labels: List[str] = None, assignees: List[str] = None) -> str:
+    """Create a new issue
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        title: Issue title
+        body: Issue body
+        labels: List of label names
+        assignees: List of assignee usernames
+        
+    Returns:
+        JSON string with created issue
+    """
+    data = {
+        'title': title,
+        'body': body
+    }
+    
+    if labels:
+        data['labels'] = labels
+    if assignees:
+        data['assignees'] = assignees
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/issues', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def update_issue(owner: str, repo: str, issue_number: int, title: str = None, body: str = None, state: str = None, labels: List[str] = None) -> str:
+    """Update an issue
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+        title: New title
+        body: New body
+        state: New state (open, closed)
+        labels: New labels
+        
+    Returns:
+        JSON string with updated issue
+    """
+    data = {}
+    if title is not None:
+        data['title'] = title
+    if body is not None:
+        data['body'] = body
+    if state is not None:
+        data['state'] = state
+    if labels is not None:
+        data['labels'] = labels
+    
+    result = await github.api_request('PATCH', f'https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def add_issue_comment(owner: str, repo: str, issue_number: int, body: str) -> str:
+    """Add comment to issue
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+        body: Comment body
+        
+    Returns:
+        JSON string with created comment
+    """
+    data = {'body': body}
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_issue_comments(owner: str, repo: str, issue_number: int) -> str:
+    """List issue comments
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+        
+    Returns:
+        JSON string with comments
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# PULL REQUESTS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_pull_requests(owner: str, repo: str, state: str = "open", sort: str = "created", direction: str = "desc", per_page: int = 30) -> str:
+    """List pull requests
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        state: PR state (open, closed, all)
+        sort: Sort by (created, updated, popularity)
+        direction: Sort direction (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with pull requests
+    """
+    params = {
+        'state': state,
+        'sort': sort,
+        'direction': direction,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/pulls', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_pull_request(owner: str, repo: str, pull_number: int) -> str:
+    """Get specific pull request
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pull_number: Pull request number
+        
+    Returns:
+        JSON string with pull request details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_pull_request(owner: str, repo: str, title: str, head: str, base: str, body: str = "", draft: bool = False) -> str:
+    """Create a pull request
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        title: PR title
+        head: Head branch
+        base: Base branch
+        body: PR body
+        draft: Create as draft
+        
+    Returns:
+        JSON string with created pull request
+    """
+    data = {
+        'title': title,
+        'head': head,
+        'base': base,
+        'body': body,
+        'draft': draft
+    }
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/pulls', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def update_pull_request(owner: str, repo: str, pull_number: int, title: str = None, body: str = None, state: str = None) -> str:
+    """Update a pull request
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pull_number: Pull request number
+        title: New title
+        body: New body
+        state: New state (open, closed)
+        
+    Returns:
+        JSON string with updated pull request
+    """
+    data = {}
+    if title is not None:
+        data['title'] = title
+    if body is not None:
+        data['body'] = body
+    if state is not None:
+        data['state'] = state
+    
+    result = await github.api_request('PATCH', f'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def merge_pull_request(owner: str, repo: str, pull_number: int, commit_title: str = "", commit_message: str = "", merge_method: str = "merge") -> str:
+    """Merge a pull request
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pull_number: Pull request number
+        commit_title: Commit title
+        commit_message: Commit message
+        merge_method: Merge method (merge, squash, rebase)
+        
+    Returns:
+        JSON string with merge result
+    """
+    data = {
+        'commit_title': commit_title,
+        'commit_message': commit_message,
+        'merge_method': merge_method
+    }
+    
+    result = await github.api_request('PUT', f'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/merge', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_pull_request_files(owner: str, repo: str, pull_number: int) -> str:
+    """List files changed in pull request
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pull_number: Pull request number
+        
+    Returns:
+        JSON string with changed files
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/files')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_pull_request_review(owner: str, repo: str, pull_number: int, body: str = "", event: str = "COMMENT") -> str:
+    """Create a pull request review
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pull_number: Pull request number
+        body: Review body
+        event: Review event (APPROVE, REQUEST_CHANGES, COMMENT)
+        
+    Returns:
+        JSON string with created review
+    """
+    data = {
+        'body': body,
+        'event': event
+    }
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/reviews', json=data)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# SEARCH TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def search_repositories(query: str, sort: str = "best-match", order: str = "desc", per_page: int = 30) -> str:
+    """Search repositories
+    
+    Args:
+        query: Search query
+        sort: Sort by (stars, forks, help-wanted-issues, updated)
+        order: Sort order (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with search results
+    """
+    params = {
+        'q': query,
+        'sort': sort,
+        'order': order,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', 'https://api.github.com/search/repositories', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def search_code(query: str, sort: str = "best-match", order: str = "desc", per_page: int = 30) -> str:
+    """Search code
+    
+    Args:
+        query: Search query
+        sort: Sort by (indexed, best-match)
+        order: Sort order (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with search results
+    """
+    params = {
+        'q': query,
+        'sort': sort,
+        'order': order,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', 'https://api.github.com/search/code', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def search_issues(query: str, sort: str = "best-match", order: str = "desc", per_page: int = 30) -> str:
+    """Search issues and pull requests
+    
+    Args:
+        query: Search query
+        sort: Sort by (comments, reactions, author-date, committer-date, created, updated)
+        order: Sort order (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with search results
+    """
+    params = {
+        'q': query,
+        'sort': sort,
+        'order': order,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', 'https://api.github.com/search/issues', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def search_users(query: str, sort: str = "best-match", order: str = "desc", per_page: int = 30) -> str:
+    """Search users
+    
+    Args:
+        query: Search query
+        sort: Sort by (followers, repositories, joined)
+        order: Sort order (asc, desc)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with search results
+    """
+    params = {
+        'q': query,
+        'sort': sort,
+        'order': order,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', 'https://api.github.com/search/users', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# RELEASES & TAGS TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_releases(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository releases
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with releases
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/releases', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_release(owner: str, repo: str, release_id: str) -> str:
+    """Get specific release
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        release_id: Release ID or tag name
+        
+    Returns:
+        JSON string with release details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/releases/{release_id}')
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_release(owner: str, repo: str, tag_name: str, name: str, body: str = "", draft: bool = False, prerelease: bool = False) -> str:
+    """Create a release
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        tag_name: Tag name
+        name: Release name
+        body: Release body
+        draft: Create as draft
+        prerelease: Mark as prerelease
+        
+    Returns:
+        JSON string with created release
+    """
+    data = {
+        'tag_name': tag_name,
+        'name': name,
+        'body': body,
+        'draft': draft,
+        'prerelease': prerelease
+    }
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/releases', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_tags(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository tags
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with tags
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/tags', params=params)
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# COMMITS & HISTORY TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_commits(owner: str, repo: str, sha: str = None, path: str = None, per_page: int = 30) -> str:
+    """List repository commits
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        sha: SHA or branch name
+        path: File path to filter commits
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with commits
+    """
+    params = {'per_page': min(per_page, 100)}
+    if sha:
+        params['sha'] = sha
+    if path:
+        params['path'] = path
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/commits', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def get_commit(owner: str, repo: str, commit_sha: str) -> str:
+    """Get specific commit
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        commit_sha: Commit SHA
+        
+    Returns:
+        JSON string with commit details
+    """
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}')
+    return json.dumps(result, indent=2)
+
+# ============================================================================
+# LABELS & MILESTONES TOOLS
+# ============================================================================
+
+@mcp.tool()
+async def list_labels(owner: str, repo: str, per_page: int = 30) -> str:
+    """List repository labels
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with labels
+    """
+    params = {'per_page': min(per_page, 100)}
+    result = await github.api_request('GET', f'https://api.github.com/repos/{owner}/{repo}/labels', params=params)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def create_label(owner: str, repo: str, name: str, color: str, description: str = "") -> str:
+    """Create a label
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        name: Label name
+        color: Label color (hex without #)
+        description: Label description
+        
+    Returns:
+        JSON string with created label
+    """
+    data = {
+        'name': name,
+        'color': color,
+        'description': description
+    }
+    
+    result = await github.api_request('POST', f'https://api.github.com/repos/{owner}/{repo}/labels', json=data)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def list_milestones(owner: str, repo: str, state: str = "open", per_page: int = 30) -> str:
+    """List repository milestones
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        state: Milestone state (open, closed, all)
+        per_page: Results per page (1-100)
+        
+    Returns:
+        JSON string with milestones
+    """
+    params = {
+        'state': state,
+        'per_page': min(per_page, 100)
+    }
+    
+    result = await github.api_request('GET', f'https://api.github.com/repos
